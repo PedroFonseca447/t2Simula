@@ -67,7 +67,7 @@ public class Main {
         int n1 = 0, n2 = 0;                 // ocupação total em cada fila
 
         // Escalonador
-        double nextArr1 = 1.5;              // PRIMEIRA CHEGADA FIXA em 1.5 (não sorteia)
+        double nextArr1 = 2.0;              // PRIMEIRA CHEGADA FIXA em 2.0 (não sorteia)
         PriorityQueue<Double> dep1 = new PriorityQueue<>();  // términos em F1
         PriorityQueue<Double> pass = new PriorityQueue<>();  // passagens F1->F2 (dep1 + TRANSIT)
         PriorityQueue<Double> dep2 = new PriorityQueue<>();  // términos em F2
