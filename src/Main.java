@@ -1,184 +1,176 @@
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.PrintWriter;
 import java.util.Locale;
 import java.util.PriorityQueue;
 
 public class Main {
 
-    // ---------- Gerador de aleatórios (LCG período grande) ----------
-    // Seed sugerida: 15 (pode mudar se quiser reprodutibilidade via outro seed)
-    private static int previous = 1037;
+    // ---------- RNG base ----------
+    private static int previous = 1234;
     private static double nextRandom() {
-        // LCG estável para 100k amostras
-        int a = 61;
-        int c = 37;
-        int M = 365_789;
+        int a = 61, c = 37, M = 365789;
         previous = ((a * previous) + c) % M;
         return (double) previous / M; // [0,1)
     }
 
-    // Acumula tempo nos estados atuais de F1 e F2
-    private static void acumulaTempo(double dt, int n1, int n2,
-                                     double[] timeInState1, double[] timeInState2) {
-        timeInState1[n1] += dt;
-        timeInState2[n2] += dt;
-    }
-
-    public static void main(String[] args) throws IOException {
+    public static void main(String[] args) {
         Locale.setDefault(Locale.US);
 
-        // --------- “Orçamento” de aleatórios ----------
+        // --------- Orçamento de aleatórios ----------
         final int COUNT = 100_000;
         double[] lista = new double[COUNT];
         for (int i = 0; i < COUNT; i++) lista[i] = nextRandom();
         final int[] pos = {0}; // próximo índice a consumir
 
-        // (Opcional) Salva aleatórios em arquivo TXT simples (um por linha)
-        try (PrintWriter out = new PrintWriter(new FileWriter("aleatorios.txt"))) {
-            for (double v : lista) out.println(v);
-        }
-        System.out.println("Arquivo 'aleatorios.txt' criado com " + COUNT + " números.");
-
-        // --------- Helpers ----------
+        // --------- Helper: U(a,b) ----------
         java.util.function.BiFunction<Double, Double, Double> uniform = (a, b) -> {
-            if (pos[0] >= COUNT) throw new RuntimeException("Sem mais números pseudoaleatórios.");
-            double u = lista[pos[0]++];           // consome 1 número
-            return a + (b - a) * u;               // U(a,b)
+            double u = lista[pos[0]++]; // aqui só chamaremos se já garantido pos[0] < COUNT
+            return a + (b - a) * u;
         };
 
-        // --------- Parâmetros das filas, para alterar os valores mude aqui) ----------
-        // Fila 1: G/G/2/3  | Chegadas U(1,4) | Serviço U(3,4)
+        // ============================ FILA 1 (Q1) ============================
+        final double ARR1_A = 1.0, ARR1_B = 4.0; // interchegadas U(1,4)
+        final double SVC1_A = 3.0, SVC1_B = 4.0; // serviço U(3,4)
         final int SERVERS1 = 2;
-        final int CAP1 = 3;                // K total da F1 = 3 (2 em serviço + 1 em fila máx)
-        final double ARR1_A = 1.0, ARR1_B = 4.0;
-        final double SVC1_A = 3.0, SVC1_B = 4.0;
+        final int QUEUE1 = 3;                    // capacidade da FILA (K)
+        final int CAP1 = SERVERS1 + QUEUE1;      // capacidade total do sistema Q1
 
-        // Fila 2: G/G/1/5  | Serviço U(2,3) | (sem chegadas externas)
+        // ============================ FILA 2 (Q2) ============================
+        // Sem chegadas externas; recebe tudo que sai de Q1
+        final double SVC2_A = 2.0, SVC2_B = 3.0; // serviço U(2,3)
         final int SERVERS2 = 1;
-        final int CAP2 = 5;                // K total da F2 = 5 (1 em serviço + 4 em fila máx)
-        final double SVC2_A = 2.0, SVC2_B = 3.0;//tempo minimo e maximo de chegada na fila 2 como no simulador
-        //______________________________________________________________________________________________
-        // Tempo de trânsito entre filas (0 = passagem imediata)
-        final double TRANSIT = 0.0;
+        final int QUEUE2 = 5;
+        final int CAP2 = SERVERS2 + QUEUE2;
 
         // --------- Estado global ----------
-        double t = 0.0;                     // relógio global (min)
-        int n1 = 0, n2 = 0;                 // ocupação total em cada fila
+        double t = 0.0; // relógio global (min)
 
-        // Escalonador
-        double nextArr1 = 2.0;              // PRIMEIRA CHEGADA FIXA em 2.0 (não sorteia)
-        PriorityQueue<Double> dep1 = new PriorityQueue<>();  // términos em F1
-        PriorityQueue<Double> pass = new PriorityQueue<>();  // passagens F1->F2 (dep1 + TRANSIT)
-        PriorityQueue<Double> dep2 = new PriorityQueue<>();  // términos em F2
-
-        // Métricas
-        int losses1 = 0, losses2 = 0;
+        // --------- Estado Q1 ----------
+        int n1 = 0; // clientes no sistema Q1
+        double nextArr1 = 1.5; // primeira chegada em 1.5
+        PriorityQueue<Double> depQ1 = new PriorityQueue<>(); // tempos de saída de Q1
+        int losses1 = 0;
         double[] timeInState1 = new double[CAP1 + 1];
+
+        // --------- Estado Q2 ----------
+        int n2 = 0; // clientes no sistema Q2
+        PriorityQueue<Double> depQ2 = new PriorityQueue<>(); // tempos de saída de Q2
+        int losses2 = 0;
         double[] timeInState2 = new double[CAP2 + 1];
 
-        // --------- Loop principal ----------
-        while (pos[0] < COUNT) {
-            double nextDep1 = dep1.isEmpty() ? Double.POSITIVE_INFINITY : dep1.peek();
-            double nextPass = pass.isEmpty() ? Double.POSITIVE_INFINITY : pass.peek();
-            double nextDep2 = dep2.isEmpty() ? Double.POSITIVE_INFINITY : dep2.peek();
+        // --------- Loop principal (parada limpa ao esgotar aleatórios) ----------
+        while (true) {
+            double nextDep1 = depQ1.isEmpty() ? Double.POSITIVE_INFINITY : depQ1.peek();
+            double nextDep2 = depQ2.isEmpty() ? Double.POSITIVE_INFINITY : depQ2.peek();
 
-            // Ordem de prioridade de eventos em empate (determinística):
-            // 1) Chegada F1, 2) Passagem F1->F2, 3) Saída F1, 4) Saída F2
-            // (A linha abaixo pega o mínimo; os if's a seguir definem a prioridade por ordem)
-            double tNext = Math.min(Math.min(nextArr1, nextPass), Math.min(nextDep1, nextDep2));
+            // Próximo evento entre: chegada em Q1, saída de Q1, saída de Q2
+            double tNext = Math.min(nextArr1, Math.min(nextDep1, nextDep2));
             if (Double.isInfinite(tNext)) break;
 
-            // Blindagem de limites
-            n1 = Math.max(0, Math.min(n1, CAP1));
-            n2 = Math.max(0, Math.min(n2, CAP2));
-
-            // Acumula tempo nos estados atuais
-            acumulaTempo(tNext - t, n1, n2, timeInState1, timeInState2);
+            // Acumula tempos nos estados atuais
+            if (n1 >= 0 && n1 <= CAP1) timeInState1[n1] += (tNext - t);
+            if (n2 >= 0 && n2 <= CAP2) timeInState2[n2] += (tNext - t);
             t = tNext;
 
-            if (tNext == nextArr1) {
-                // ================= CHEGADA em F1 =================
-                if (n1 < CAP1) {
-                    int busyBefore = Math.min(n1, SERVERS1);
-                    n1++; // entra em F1
-                    // Inicia serviço se abriu servidor
-                    if (Math.min(n1, SERVERS1) > busyBefore) {
-                        dep1.add(t + uniform.apply(SVC1_A, SVC1_B));
-                    }
-                } else {
-                    losses1++; // perda por capacidade cheia em F1
-                }
-                // Próxima chegada EXTERNA só para F1
+            if (t == nextArr1) {
+                // ===================== CHEGADA EM Q1 =====================
+                // Para agendar a próxima chegada, precisamos sortear: checar orçamento
+                if (pos[0] >= COUNT) break;
                 nextArr1 = t + uniform.apply(ARR1_A, ARR1_B);
 
-            } else if (tNext == nextPass) {
-                // ================= PASSAGEM F1 -> F2 =================
-                pass.poll();
-
-                // Sai de F1
-                if (n1 > 0) n1--;
-                // Se ainda tem gente esperando em F1 (n1 >= SERVERS1), inicia novo serviço
-                if (n1 >= SERVERS1) {
-                    dep1.add(t + uniform.apply(SVC1_A, SVC1_B));
-                }
-
-                // Tenta entrar em F2
-                if (n2 < CAP2) {
-                    int busyBefore2 = Math.min(n2, SERVERS2);
-                    n2++; // entra em F2
-                    // Inicia serviço em F2 se abriu servidor
-                    if (Math.min(n2, SERVERS2) > busyBefore2) {
-                        dep2.add(t + uniform.apply(SVC2_A, SVC2_B));
+                if (n1 < CAP1) {
+                    int busyBefore = Math.min(n1, SERVERS1);
+                    n1++;
+                    // Se servidor ficou ocupado agora, inicia serviço (precisa sortear)
+                    if (Math.min(n1, SERVERS1) > busyBefore) {
+                        if (pos[0] >= COUNT) break;
+                        depQ1.add(t + uniform.apply(SVC1_A, SVC1_B));
                     }
                 } else {
-                    losses2++; // perda em F2 (bloqueio por capacidade total)
+                    // Sistema Q1 cheio → perda em Q1
+                    losses1++;
                 }
 
-            } else if (tNext == nextDep1) {
-                // =============== TÉRMINO DE SERVIÇO em F1 ===============
-                dep1.poll();
-                // Saída efetiva de F1 ocorre via PASSAGEM (aplica transit)
-                pass.add(t + TRANSIT);
+            } else if (t == nextDep1) {
+                // ===================== SAÍDA DE Q1 (ROTEIA PARA Q2) =====================
+                depQ1.poll();
+                n1--;
+
+                // Se ainda há fila em Q1, inicia novo serviço (precisa sortear)
+                if (n1 >= SERVERS1) {
+                    if (pos[0] >= COUNT) break;
+                    depQ1.add(t + uniform.apply(SVC1_A, SVC1_B));
+                }
+
+                // Cliente tenta entrar em Q2
+                if (n2 < CAP2) {
+                    int busyBefore2 = Math.min(n2, SERVERS2);
+                    n2++;
+                    // Se servidor de Q2 ficou ocupado agora, inicia serviço (precisa sortear)
+                    if (Math.min(n2, SERVERS2) > busyBefore2) {
+                        if (pos[0] >= COUNT) break;
+                        depQ2.add(t + uniform.apply(SVC2_A, SVC2_B));
+                    }
+                } else {
+                    // Q2 cheia → perda em Q2
+                    losses2++;
+                }
 
             } else {
-                // ================= SAÍDA em F2 =================
-                dep2.poll();
-                if (n2 > 0) n2--; // sai do sistema na F2
-                // Se ainda há fila em F2 (n2 >= SERVERS2), inicia novo serviço
+                // ===================== SAÍDA DE Q2 (vai embora do sistema) =====================
+                depQ2.poll();
+                n2--;
+
+                // Se ainda há fila em Q2, inicia novo serviço (precisa sortear)
                 if (n2 >= SERVERS2) {
-                    dep2.add(t + uniform.apply(SVC2_A, SVC2_B));
+                    if (pos[0] >= COUNT) break;
+                    depQ2.add(t + uniform.apply(SVC2_A, SVC2_B));
                 }
             }
         }
 
-        // ---------- Relatórios ----------
-        double totalMin = t;
-        double totalSec = totalMin * 60.0;
+        // --------- Finais ---------
+        double totalSimTimeMin = t;
+        double totalSimTimeSec = totalSimTimeMin * 60.0;
 
-        System.out.println("========== TANDEM ==========");
-        System.out.printf("Fila 1: G/G/%d/%d | Chegadas U(%.1f,%.1f) | Serviço U(%.1f,%.1f)%n",
-                SERVERS1, CAP1, ARR1_A, ARR1_B, SVC1_A, SVC1_B);
-        System.out.printf("Fila 2: G/G/%d/%d | Serviço U(%.1f,%.1f)%n",
-                SERVERS2, CAP2, SVC2_A, SVC2_B);
-        System.out.printf("Transit: %.1f  | Tempo total: %.2f s (%.4f min)%n", TRANSIT, totalSec, totalMin);
+        // --------- Relatório Q1 ---------
+        System.out.println("Queue:   Fila 1 (G/G/" + SERVERS1 + "/" + QUEUE1 + ")");
+        System.out.printf ("Chegadas (min): %.1f ... %.1f%n", ARR1_A, ARR1_B);
+        System.out.printf ("Serviço   (min): %.1f ... %.1f%n", SVC1_A, SVC1_B);
+        System.out.printf ("Servidores: %d | Capacidade total: %d | Tamanho fila: %d%n",
+                SERVERS1, CAP1, QUEUE1);
+        System.out.println("*********************************************************");
+        System.out.printf("%6s %18s %23s%n", "Estado", "Tempo (sec)", "Probabilidade");
 
-        System.out.println("\n--- Distribuição por estado (Fila 1) ---");
-        double sumP1 = 0.0;
+        double probSum1 = 0.0;
         for (int s = 0; s <= CAP1; s++) {
-            double prob = (totalMin > 0) ? (timeInState1[s] / totalMin) * 100.0 : 0.0;
-            sumP1 += prob;
-            System.out.printf("n1=%2d  tempo=%.2f s  P=%.2f%%%n", s, timeInState1[s] * 60.0, prob);
+            double timeSec = timeInState1[s] * 60.0;
+            double prob = (totalSimTimeMin > 0) ? (timeInState1[s] / totalSimTimeMin) * 100.0 : 0.0;
+            probSum1 += prob;
+            System.out.printf("%6d %18.2f %22.2f%%%n", s, timeSec, prob);
         }
-        System.out.printf("Perdas F1: %d | soma P1 = %.2f%%%n", losses1, sumP1);
+        System.out.println();
+        System.out.println("Perdas Fila 1: " + losses1);
+        System.out.printf ("Tempo total de simulação: %.2f segundos%n", totalSimTimeSec);
+        System.out.printf ("Sum of probabilities (Q1): %.2f%%%n", probSum1);
+        System.out.println();
 
-        System.out.println("\n--- Distribuição por estado (Fila 2) ---");
-        double sumP2 = 0.0;
+        // --------- Relatório Q2 ---------
+        System.out.println("Queue:   Fila 2 (G/G/" + SERVERS2 + "/" + QUEUE2 + ")");
+        System.out.println("Chegadas (min): — (somente de Fila 1)");
+        System.out.printf ("Serviço   (min): %.1f ... %.1f%n", SVC2_A, SVC2_B);
+        System.out.printf ("Servidores: %d | Capacidade total: %d | Tamanho fila: %d%n",
+                SERVERS2, CAP2, QUEUE2);
+        System.out.println("*********************************************************");
+        System.out.printf("%6s %18s %23s%n", "Estado", "Tempo (sec)", "Probabilidade");
+
+        double probSum2 = 0.0;
         for (int s = 0; s <= CAP2; s++) {
-            double prob = (totalMin > 0) ? (timeInState2[s] / totalMin) * 100.0 : 0.0;
-            sumP2 += prob;
-            System.out.printf("n2=%2d  tempo=%.2f s  P=%.2f%%%n", s, timeInState2[s] * 60.0, prob);
+            double timeSec = timeInState2[s] * 60.0;
+            double prob = (totalSimTimeMin > 0) ? (timeInState2[s] / totalSimTimeMin) * 100.0 : 0.0;
+            probSum2 += prob;
+            System.out.printf("%6d %18.2f %22.2f%%%n", s, timeSec, prob);
         }
-        System.out.printf("Perdas F2: %d | soma P2 = %.2f%%%n", losses2, sumP2);
+        System.out.println();
+        System.out.println("Perdas Fila 2: " + losses2);
+        System.out.printf ("Sum of probabilities (Q2): %.2f%%%n", probSum2);
     }
 }
