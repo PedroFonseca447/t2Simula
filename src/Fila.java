@@ -3,28 +3,28 @@ import java.util.function.BiFunction;
 
 public class Fila {
 
-    // --- Propriedades (mantendo os nomes que você escolheu) ---
+    // Parâmetros
     private double arrivalMin;
     private double arrivalMax;
     private int Servidores;
     private int Loss;
-    private int Capacidade;
-    private int Customers;
-    private final double minService;    // U(minService, maxService)
+    private int Capacidade;  // capacidade total (em serviço + fila)
+    private int Customers;   // clientes no sistema
+
+    private final double minService;
     private final double maxService;
 
-    // --- Estado da simulação ---
-    private double clock = 0.0;                 // relógio da fila
-    private double nextArrival = Double.NaN;    // instante da próxima chegada
+    // Estado
+    private double clock = 0.0;                 // relógio da fila (min)
+    private double nextArrival = Double.NaN;    // próxima chegada externa
     private final PriorityQueue<Double> departures = new PriorityQueue<>();
 
-    // --- Estatística ---
-    private final double[] times; // tempo acumulado por estado 0..Capacidade
+    // Estatística
+    private final double[] times;               // tempo por estado 0..Capacidade (min)
 
-    // --- Fonte de aleatórios U(a,b) (vem de fora: Main) ---
+    // Aleatórios
     private BiFunction<Double, Double, Double> uniform;
 
-    // ---------- Construtor ----------
     public Fila(int Servidores, int Capacidade,
                 double arrivalMin, double arrivalMax,
                 double minService, double maxService) {
@@ -37,51 +37,77 @@ public class Fila {
         this.times = new double[Capacidade + 1];
     }
 
-    // ---------- Inicialização ----------
+    /** Inicializa fila. Se não tem chegada externa, nextArrival = +inf. */
     public void init(double t0, BiFunction<Double, Double, Double> uniform) {
         this.clock = t0;
         this.uniform = uniform;
-        this.nextArrival = t0 + uniform.apply(arrivalMin, arrivalMax);
+        if (arrivalMin <= arrivalMax) {
+            this.nextArrival = t0 + uniform.apply(arrivalMin, arrivalMax); // amostrada
+        } else {
+            this.nextArrival = Double.POSITIVE_INFINITY; // sem chegada externa
+        }
     }
 
-    // ---------- Procedimentos ----------
-    public void in() {
-        // agenda a próxima chegada
-        nextArrival = clock + uniform.apply(arrivalMin, arrivalMax);
+    /** Inicializa fila com PRIMEIRA chegada fixa em 'firstArrivalAt'. */
+    public void initWithFirstArrival(double t0, BiFunction<Double, Double, Double> uniform, double firstArrivalAt) {
+        this.clock = t0;
+        this.uniform = uniform;
+        if (arrivalMin <= arrivalMax) {
+            this.nextArrival = firstArrivalAt; // <<< fixa a 1ª chegada
+        } else {
+            this.nextArrival = Double.POSITIVE_INFINITY;
+        }
+    }
 
+    /** Chegada EXTERNA (agenda a próxima). */
+    public void in() {
+        nextArrival = clock + uniform.apply(arrivalMin, arrivalMax);
+        tryEnterAndMaybeStart();
+    }
+
+    /** Chegada via ROTEAMENTO (não agenda próxima externa). */
+    public void inFromRouting() {
+        tryEnterAndMaybeStart();
+    }
+
+    private void tryEnterAndMaybeStart() {
         if (Customers < Capacidade) {
             int busyBefore = Math.min(Customers, Servidores);
             Customers++;
-
-            // se abriu atendimento imediatamente, agenda término
             if (Math.min(Customers, Servidores) > busyBefore) {
                 departures.add(clock + uniform.apply(minService, maxService));
             }
         } else {
-            // cheio -> perda
             Loss++;
         }
     }
 
+    /** Término de serviço (somente se há término “agora”). */
     public void out() {
-        departures.poll(); // remove o término que ocorreu agora
+        if (Customers <= 0 || departures.isEmpty()) return;
+        double top = departures.peek();
+        if (top > clock + 1e-9) return; // stale/adiantado
+        departures.poll();
         Customers--;
-
-        // se ainda há gente esperando (fila), inicia novo serviço
         if (Customers >= Servidores) {
             departures.add(clock + uniform.apply(minService, maxService));
         }
     }
 
-    // ---------- Direção do tempo / agendamento ----------
     public double nextArrivalTime() { return nextArrival; }
 
     public double nextDepartureTime() {
         return departures.isEmpty() ? Double.POSITIVE_INFINITY : departures.peek();
     }
 
+    /** Acumula tempo no estado atual até tNext (com clamp do índice). */
     public void advanceTo(double tNext) {
-        times[Customers] += (tNext - clock);
+        if (tNext <= clock) { // nada a acumular
+            clock = tNext;
+            return;
+        }
+        int idx = Math.max(0, Math.min(Customers, Capacidade));
+        times[idx] += (tNext - clock);
         clock = tNext;
     }
 
@@ -89,22 +115,13 @@ public class Fila {
 
     public double[] getTimesByState() { return times; }
 
-    // ---------- Getters e Setters ----------
     public int getCustomers() { return Customers; }
-    public void setCustomers(int Customers) { this.Customers = Customers; }
-
     public int getLoss() { return Loss; }
-    public void setLoss(int Loss) { this.Loss = Loss; }
-
     public int getCapacidade() { return Capacidade; }
-    public void setCapacidade(int Capacidade) { this.Capacidade = Capacidade; }
-
     public int getServidores() { return Servidores; }
-    public void setServidores(int Servidores) { this.Servidores = Servidores; }
 
-    public double getArrivalMin() { return arrivalMin; }
-    public void setArrivalMin(double arrivalMin) { this.arrivalMin = arrivalMin; }
-
-    public double getArrivalMax() { return arrivalMax; }
-    public void setArrivalMax(double arrivalMax) { this.arrivalMax = arrivalMax; }
+    // util opcional
+    public void setChegadasExternasAtivas(boolean ativa) {
+        if (!ativa) nextArrival = Double.POSITIVE_INFINITY;
+    }
 }
