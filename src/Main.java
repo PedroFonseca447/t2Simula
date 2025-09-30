@@ -4,11 +4,11 @@ import java.util.function.BiFunction;
 public class Main {
 
     // ========= RNG base =========
-    private static int previous = 1234;
+    private static int seed = 1234;
     private static double nextRandom() {
         int a = 61, c = 37, M = 365_789;
-        previous = ((a * previous) + c) % M;
-        return (double) previous / M; // [0,1)
+        seed = ((a * seed) + c) % M;
+        return (double) seed / M; // [0,1)
     }
 
     // ========= RNG orçamentado =========
@@ -64,16 +64,16 @@ public class Main {
         final BiFunction<Double, Double, Double> uniform =
                 (a, b) -> a + (b - a) * rng.next();
 
-        // ====== FILAS (exemplo/diagrama) ======
-        // F1: G/G/1/3  (chegadas U(2,4), serviço U(1,2))  => cap total = 1 + 3 = 4
-        Fila q1 = new Fila(1, 4, 2.0, 4.0, 1.0, 2.0);
+        
+        // F1: G/G/1/1  (chegadas U(2,4), serviço U(1,2))  => cap total = 1 + 3 = 4
+        Fila q1 = new Fila(1, 1, 2.0, 4.0, 1.0, 2.0);
 
         // F2: G/G/2/5  (sem chegadas externas, serviço U(4,6)) => cap total = 2 + 5 = 7
         // Para "sem chegadas externas", mantenha arrivalMin > arrivalMax (ex.: 10,0)
-        Fila q2 = new Fila(2, 7, 10.0, 0.0, 4.0, 6.0);
+        Fila q2 = new Fila(2, 5, 0.0, 0.0, 4.0, 6.0);
 
         // F3: G/G/2/10 (sem chegadas externas, serviço U(5,15)) => cap total = 2 + 10 = 12
-        Fila q3 = new Fila(2, 12, 10.0, 0.0, 5.0, 15.0);
+        Fila q3 = new Fila(2, 10, 0.0, 0.0, 5.0, 15.0);
         List<Fila> filas = List.of(q1, q2, q3);
 
         // Inicializa: F1 com 1ª chegada FIXA em t = 2.0; demais sem chegada externa
